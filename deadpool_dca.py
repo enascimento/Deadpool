@@ -31,6 +31,10 @@ import random
 import subprocess
 import math
 
+# Adapt paths to your setup if needed:
+tracergrind_exec='/usr/local/bin/valgrind'
+tracerpin_exec='/usr/local/bin/Tracer'
+
 def processinput(iblock, blocksize):
     """processinput() helper function
    iblock: int representation of one input block
@@ -157,11 +161,14 @@ def bin2daredevil(keyword=None, keywords=None, delete_bin=True, config=None, con
                 config['memory']='4G'
             if 'top' not in config:
                 config['top']='20'
-            if 'correct_key' in config:
-                config['comment_correct_key']=''
-            else:
-                config['comment_correct_key']='#'
-                config['correct_key']='000102030405060708090a0b0c0d0e0f'
+            if 'comment_correct_key' not in config:
+                if 'correct_key' in config:
+                    config['comment_correct_key']=''
+                else:
+                    config['comment_correct_key']='#'
+                    config['correct_key']='0x000102030405060708090a0b0c0d0e0f'
+            if config['correct_key'][:2] != "0x":
+                config['correct_key'] = "0x" + config['correct_key']
             if configname:
                 configname+='.'
             content="""
@@ -376,7 +383,7 @@ class TracerPIN(Tracer):
         if not processed_input:
             processed_input=[]
             iblock=None
-        cmd_list=['Tracer', '-q', '1', '-b', '0', '-c', '0', '-i', '0', '-f', str(self.addr_range), '-o', self.tmptracefile, '--'] + self.target + processed_input
+        cmd_list=[tracerpin_exec, '-q', '1', '-b', '0', '-c', '0', '-i', '0', '-f', str(self.addr_range), '-o', self.tmptracefile, '--'] + self.target + processed_input
         output=self._exec(cmd_list)
         oblock=self.processoutput(output, self.blocksize)
         self._trace_init(n, iblock, oblock)
@@ -408,7 +415,7 @@ class TracerPIN(Tracer):
         if not processed_input:
             processed_input=[]
             iblock=None
-        cmd_list=['Tracer', '-f', str(self.addr_range), '-o', tracefile, '--'] + self.target + processed_input
+        cmd_list=[tracerpin_exec, '-f', str(self.addr_range), '-o', tracefile, '--'] + self.target + processed_input
         output=self._exec(cmd_list, debug=True)
 
 class TracerGrind(Tracer):
@@ -443,7 +450,7 @@ class TracerGrind(Tracer):
         if not processed_input:
             processed_input=[]
             iblock=None
-        cmd_list=['valgrind', '--quiet', '--trace-children=yes', '--tool=tracergrind', '--filter='+str(self.addr_range), '--vex-iropt-register-updates=allregs-at-mem-access', '--output='+self.tmptracefile+'.grind'] + self.target + processed_input
+        cmd_list=[tracergrind_exec, '--quiet', '--trace-children=yes', '--tool=tracergrind', '--filter='+str(self.addr_range), '--vex-iropt-register-updates=allregs-at-mem-access', '--output='+self.tmptracefile+'.grind'] + self.target + processed_input
         output=self._exec(cmd_list)
         oblock=self.processoutput(output, self.blocksize)
         output=subprocess.check_output("texttrace %s >(grep '^.M' > %s)" % (self.tmptracefile+'.grind', self.tmptracefile), shell=True, executable='/bin/bash')
@@ -473,7 +480,7 @@ class TracerGrind(Tracer):
         if not processed_input:
             processed_input=[]
             iblock=None
-        cmd_list=['valgrind', '--trace-children=yes', '--tool=tracergrind', '--filter='+str(self.addr_range), '--vex-iropt-register-updates=allregs-at-mem-access', '--output='+tracefile+'.grind'] + self.target + processed_input
+        cmd_list=[tracergrind_exec, '--trace-children=yes', '--tool=tracergrind', '--filter='+str(self.addr_range), '--vex-iropt-register-updates=allregs-at-mem-access', '--output='+tracefile+'.grind'] + self.target + processed_input
         output=self._exec(cmd_list, debug=True)
         output=subprocess.check_output("texttrace %s %s" % (tracefile+'.grind',tracefile))
         os.remove(tracefile+'.grind')

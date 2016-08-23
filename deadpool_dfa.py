@@ -57,7 +57,7 @@ def processoutput(output, blocksize):
 def try_processoutput(processoutput):
     def foo(output, blocksize):
         try:
-            return processoutput(output.decode(), blocksize)
+            return processoutput(output, blocksize)
         except:
             return None
     return foo
@@ -107,8 +107,9 @@ class Acquisition:
         if not self.processed_input:
             self.processed_input=[]
         # from output bytes returns oblock as int
-        # If program may crash, make sure processoutput() returns None in such cases
-        self.processoutput = try_processoutput(processoutput)
+        self.processoutput = processoutput
+        # If program may crash, make sure try_processoutput() returns None in such cases
+        self.try_processoutput = try_processoutput(processoutput)
         # Largest (aligned) block to fault
         self.maxleaf=maxleaf
         # Smallest (aligned) block to fault in discovery phase
@@ -159,7 +160,7 @@ class Acquisition:
         self.timeout=10
         # Prepare golden output
         starttime=time.time()
-        oblock,status,index=self.doit(self.goldendata)
+        oblock,status,index=self.doit(self.goldendata, protect=False)
         # Set timeout = N times normal execution time
         self.timeout=(time.time()-starttime)*timeoutfactor
         if oblock is None or status is not self.FaultStatus.NoFault:
@@ -222,7 +223,10 @@ class Acquisition:
                 tracefiles.append(trsfile)
         return tracefiles
 
-    def doit(self, table):
+    def doit(self, table, protect=True):
+        # To avoid seldom busy file errors:
+        if os.path.isfile(self.targetdata):
+            os.remove(self.targetdata)
         open(self.targetdata, 'wb').write(table)
         if self.targetbin==self.targetdata:
             os.chmod(self.targetbin,0o755)
@@ -239,11 +243,20 @@ class Acquisition:
         except OSError:
             return (None, self.FaultStatus.Crash, None)
         except subprocess.TimeoutExpired:
-            proc.kill()
+            proc.terminate()
+            try:
+                proc.communicate(timeout=self.timeout)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+            except:
+                pass
             return (None, self.FaultStatus.Loop, None)
         if self.debug:
             print(output)
-        oblock=self.processoutput(output, self.blocksize)
+        if protect:
+            oblock=self.try_processoutput(output, self.blocksize)
+        else:
+            oblock=self.processoutput(output, self.blocksize)
         if self.debug:
             print(oblock)
             sys.exit(0)
@@ -265,8 +278,8 @@ class Acquisition:
         dq.extend(self.splitrange((x+left,y), mincut))
         return dq
 
-    def inject(self, r, fault):
-        return self.goldendata[:r[0]]+bytes([x^fault for x in self.goldendata[r[0]:r[1]]])+self.goldendata[r[1]:]
+    def inject(self, r, faultfct):
+        return self.goldendata[:r[0]]+bytes([faultfct(x) for x in self.goldendata[r[0]:r[1]]])+self.goldendata[r[1]:]
 
     def dig(self, tree=None, faults=None, level=0, candidates=[]):
         if tree is None:
@@ -279,7 +292,7 @@ class Acquisition:
             if type(faults) is list:
                 fault=faults[0]
             else:
-                fault=random.randint(1,255)
+                fault=('xor', lambda x: x ^ random.randint(1,255))
             if self.start_from_left:
                 r=tree.popleft()
                 if not self.depth_first_traversal:
@@ -292,9 +305,9 @@ class Acquisition:
                     if breadth_first_level_address is not None and r[1] > breadth_first_level_address:
                         level+=1
                     breadth_first_level_address = r[1]
-            table=self.inject(r, fault)
+            table=self.inject(r, fault[1])
             oblock,status,index=self.doit(table)
-            log='Lvl %03i [0x%08X-0x%08X[ ^0x%02X %0*X ->' % (level, r[0], r[1], fault, 2*self.blocksize, self.iblock)
+            log='Lvl %03i [0x%08X-0x%08X[ %s 0x%02X %0*X ->' % (level, r[0], r[1], fault[0], fault[1](0), 2*self.blocksize, self.iblock)
             if oblock is not None:
                 log+=' %0*X' % (2*self.blocksize, oblock)
             log+=' '+status.name
@@ -305,6 +318,10 @@ class Acquisition:
             if status in [self.FaultStatus.NoFault, self.FaultStatus.MinorFault]:
                 continue
             elif status in [self.FaultStatus.GoodEncFault, self.FaultStatus.GoodDecFault]:
+                if status is self.FaultStatus.GoodEncFault and self.minfaultspercol is not None and self.encstatus[index] >= self.minfaultspercol:
+                    continue
+                if status is self.FaultStatus.GoodDecFault and self.minfaultspercol is not None and self.decstatus[index] >= self.minfaultspercol:
+                    continue
                 if r[1]>r[0]+self.minleafnail:
                     # Nailing phase: always depth-first is ok
                     if self.verbose>2:
